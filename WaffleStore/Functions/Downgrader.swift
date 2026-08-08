@@ -27,8 +27,8 @@ private final class InstallServerHolder {
 /// again on a second downgrade attempt crashes. Vapor's own environment setup
 /// is computed lazily exactly once here and reused for every server we start.
 private enum VaporEnvironment {
-    static let shared: Environment = {
-        var env = try! Environment.detect()
+static let shared: Vapor.Environment = {
+        var env = try! Vapor.Environment.detect()
         try! LoggingSystem.bootstrap(from: &env)
         return env
     }()
