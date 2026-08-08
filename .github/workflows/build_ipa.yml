@@ -36,6 +36,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
+            VALIDATE_PRODUCT=NO \
             PRODUCT_BUNDLE_IDENTIFIER="com.con.violetstore" \
             MARKETING_VERSION="0.1.0"
 
