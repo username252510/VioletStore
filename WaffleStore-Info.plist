@@ -2,24 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLName</key>
-			<string>com.nxtcoreee3.WaffleStore.wafflestore</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>wafflestore</string>
-			</array>
-		</dict>
-	</array>
-<key>CFBundleShortVersionString</key>
-	<string>$(MARKETING_VERSION)</string>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>UIFileSharingEnabled</key>
-	<true/>
+    <key>CFBundleDisplayName</key>
+    <string>VioletStore</string>
+    <key>CFBundleName</key>
+    <string>VioletStore</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>com.con.violetstore</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>violetstore</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>UIFileSharingEnabled</key>
+    <true/>
 </dict>
 </plist>
