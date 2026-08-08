@@ -1,0 +1,56 @@
+name: Build VioletStore IPA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Link Plist and Update Build Settings
+        run: |
+          # Ensure project.pbxproj uses WaffleStore-Info.plist and set bundle ID + version
+          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = .*/PRODUCT_BUNDLE_IDENTIFIER = "com.con.violetstore";/g' WaffleStore.xcodeproj/project.pbxproj
+          sed -i '' 's/MARKETING_VERSION = .*/MARKETING_VERSION = 0.1.0;/g' WaffleStore.xcodeproj/project.pbxproj
+          sed -i '' 's|INFOPLIST_FILE = .*;|INFOPLIST_FILE = WaffleStore-Info.plist;|g' WaffleStore.xcodeproj/project.pbxproj
+
+      - name: Build Xcode Project
+        run: |
+          xcodebuild build \
+            -project WaffleStore.xcodeproj \
+            -scheme WaffleStore \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            PRODUCT_NAME="VioletStore" \
+            PRODUCT_BUNDLE_IDENTIFIER="com.con.violetstore" \
+            MARKETING_VERSION="0.1.0"
+
+      - name: Package into IPA
+        run: |
+          mkdir -p Payload
+          # Copy compiled binary bundle to Payload
+          cp -R build/Build/Products/Release-iphoneos/*.app Payload/VioletStore.app
+          
+          # Zip into .ipa file
+          zip -r VioletStore.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VioletStore-v0.1.0
+          path: VioletStore.ipa
