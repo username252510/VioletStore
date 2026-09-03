@@ -27,7 +27,7 @@ private final class InstallServerHolder {
 /// again on a second downgrade attempt crashes. Vapor's own environment setup
 /// is computed lazily exactly once here and reused for every server we start.
 private enum VaporEnvironment {
-static let shared: Vapor.Environment = {
+    static let shared: Vapor.Environment = {
         var env = try! Vapor.Environment.detect()
         try! LoggingSystem.bootstrap(from: &env)
         return env
@@ -42,6 +42,38 @@ struct SafariWebView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {
+    }
+}
+
+/// Which local install server setup to use. Persisted via UserDefaults key
+/// "installMethod" - SettingsView binds to it with @AppStorage, this file
+/// reads it with UserDefaults directly (same split Feather uses between its
+/// SwiftUI views and ServerInstaller for "Feather.serverMethod").
+enum InstallMethod: Int, CaseIterable, Identifiable {
+    case semiLocalHTTP = 0
+    case localhostDirectSelfSigned = 1
+    case localhostDirectPublicCA = 2
+
+    var id: Int { rawValue }
+
+    static var current: InstallMethod {
+        InstallMethod(rawValue: UserDefaults.standard.integer(forKey: "installMethod")) ?? .semiLocalHTTP
+    }
+
+    var displayName: String {
+        switch self {
+        case .semiLocalHTTP: return "Semi Local (127.0.0.1)".localized
+        case .localhostDirectSelfSigned: return "HTTPS (localhost.direct, self-signed)".localized
+        case .localhostDirectPublicCA: return "HTTPS (localhost.direct, public CA)".localized
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .semiLocalHTTP: return "No cert needed. Matches Feather's Semi Local + \"Only use localhost address\" - try this first.".localized
+        case .localhostDirectSelfSigned: return "Real cert, immune to CA revocation, but requires a one-time profile install in Settings.".localized
+        case .localhostDirectPublicCA: return "Real cert, no setup needed. May get revoked without warning - localhost.direct's own changelog shows this has happened before.".localized
+        }
     }
 }
 
@@ -101,12 +133,11 @@ func installAppVersion(appId: String, versionId: String, ipaTool: IPATool, recor
     
     DispatchQueue.global(qos: .background).async {
         do {
-            // Give the cert pack a chance to refresh (or download for the
-            // first time) before deciding whether we can go the HTTPS route.
-            // This is a no-op and returns instantly if we already have a
-            // fresh-enough pack. Bounded wait so a dead network doesn't hang
-            // the downgrade - we just fall back to plain HTTP/127.0.0.1
-            // (Wi-Fi only) if it times out.
+            // Refresh whichever cert store the selected method actually
+            // needs (a no-op for Semi Local, and a no-op for either HTTPS
+            // method if its pack is already fresh enough). Bounded wait so a
+            // dead network doesn't hang the downgrade - we just fall back to
+            // plain HTTP/127.0.0.1 if it times out.
             //
             // This has to happen here, off the main thread: installAppVersion
             // runs on the main thread up to this point (it's called directly
@@ -114,26 +145,54 @@ func installAppVersion(appId: String, versionId: String, ipaTool: IPATool, recor
             // via DispatchQueue.main.async - blocking the main thread on this
             // semaphore before dispatching would deadlock that hop for the
             // full 10s timeout every time a refresh is actually needed.
+            let method = InstallMethod.current
             let certSemaphore = DispatchSemaphore(value: 0)
-            SSLCertificateManager.updateIfNeeded { _ in certSemaphore.signal() }
+            switch method {
+            case .localhostDirectSelfSigned:
+                LocalhostDirectManager.updateIfNeeded(for: .selfSigned) { _ in certSemaphore.signal() }
+            case .localhostDirectPublicCA:
+                LocalhostDirectManager.updateIfNeeded(for: .publicCA) { _ in certSemaphore.signal() }
+            case .semiLocalHTTP:
+                certSemaphore.signal()
+            }
             _ = certSemaphore.wait(timeout: .now() + 10)
 
-            // If we've got a *.backloop.dev certificate pack, serve everything -
-            // manifest AND payload - over real HTTPS on that hostname, straight from
-            // this device, so installs work over cellular/hotspot too and we don't
-            // depend on api.palera.in at all. iOS requires the OTA manifest fetch to
-            // be HTTPS with no way for the user to click through a warning, so
-            // without a trusted cert there's no way to self-host it; in that case we
-            // fall back to the old behavior of asking api.palera.in to generate the
-            // manifest for us, pointing it at our plain-HTTP local server, which
-            // still works fine on the same Wi-Fi network.
-            let useHTTPS = SSLCertificateManager.hasCertificates
-            let host = useHTTPS ? SSLCertificateManager.commonName : "127.0.0.1"
+            // Figure out which cert (if any) backs this attempt. iOS requires
+            // the OTA manifest fetch to be HTTPS with no way to click through
+            // a warning, so without a trusted cert there's no way to
+            // self-host the manifest; in that case (Semi Local, or an HTTPS
+            // method whose cert isn't ready yet) we fall back to asking
+            // api.palera.in to generate the manifest for us and point it at
+            // our plain-HTTP local server on 127.0.0.1 - this is the same
+            // thing Feather's "Semi Local" + "Only use localhost address"
+            // does.
+            let useHTTPS: Bool
+            let host: String
+            let certFileURL: URL?
+            let keyFileURL: URL?
+            switch method {
+            case .localhostDirectSelfSigned where LocalhostDirectManager.hasCertificates(for: .selfSigned):
+                useHTTPS = true
+                host = LocalhostDirectManager.hostName
+                certFileURL = LocalhostDirectManager.certificateURL(for: .selfSigned)
+                keyFileURL = LocalhostDirectManager.privateKeyURL(for: .selfSigned)
+            case .localhostDirectPublicCA where LocalhostDirectManager.hasCertificates(for: .publicCA):
+                useHTTPS = true
+                host = LocalhostDirectManager.hostName
+                certFileURL = LocalhostDirectManager.certificateURL(for: .publicCA)
+                keyFileURL = LocalhostDirectManager.privateKeyURL(for: .publicCA)
+            default:
+                useHTTPS = false
+                host = "127.0.0.1"
+                certFileURL = nil
+                keyFileURL = nil
+            }
             let scheme = useHTTPS ? "https" : "http"
             // Randomized per attempt (matches Feather) so a second downgrade in the
             // same session can never collide with a still-shutting-down previous
             // server on a fixed port.
             let port = Int.random(in: 4000...8000)
+
 
             let payloadURL = "\(scheme)://\(host):\(port)/signed.ipa"
             let finalURL: String = useHTTPS
@@ -177,10 +236,10 @@ func installAppVersion(appId: String, versionId: String, ipaTool: IPATool, recor
             let app = Application(env)
             InstallServerHolder.current = app
 
-            if useHTTPS {
-                let certs = try NIOSSLCertificate.fromPEMFile(SSLCertificateManager.certificateURL.path)
+            if useHTTPS, let certFileURL, let keyFileURL {
+                let certs = try NIOSSLCertificate.fromPEMFile(certFileURL.path)
                     .map { NIOSSLCertificateSource.certificate($0) }
-                let key = try NIOSSLPrivateKey(file: SSLCertificateManager.privateKeyURL.path, format: .pem)
+                let key = try NIOSSLPrivateKey(file: keyFileURL.path, format: .pem)
                 app.http.server.configuration.tlsConfiguration = try .makeServerConfiguration(
                     certificateChain: certs,
                     privateKey: .privateKey(key)
@@ -392,5 +451,59 @@ func cleanUp() {
         try FileManager.default.removeItem(at: appFolder)
     } catch {
         
+    }
+}
+
+/// Separate from InstallServerHolder so tapping "Install Trust Profile" in
+/// Settings can never race with/tear down an in-progress downgrade's server.
+private final class UtilityServerHolder {
+    static var current: Application?
+}
+
+/// Fetches the localhost.direct cert if needed, then hands the trust
+/// profile to Safari so iOS's native "Install Profile" flow kicks in.
+/// Directly opening a local file doesn't reliably trigger that flow - Safari
+/// downloading something with Content-Type: application/x-apple-aspen-config
+/// is the well-documented, reliable way to do it (the same mechanism MDM
+/// enrollment pages and tools like Charles Proxy/mitmproxy use), so this
+/// spins up a tiny loopback-only HTTP server just to serve it. Plain HTTP
+/// and 127.0.0.1 are both fine here since this is a manual, one-time setup
+/// step done locally, not part of the cellular-install path.
+func presentLocalhostDirectTrustProfile(completion: @escaping (Bool) -> Void) {
+    LocalhostDirectManager.updateIfNeeded(for: .selfSigned) { success in
+        guard success, let profileData = LocalhostDirectManager.makeTrustProfileData() else {
+            completion(false)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            UtilityServerHolder.current?.shutdown()
+            UtilityServerHolder.current = nil
+
+            let app = Application(VaporEnvironment.shared)
+            UtilityServerHolder.current = app
+            let port = Int.random(in: 4000...8000)
+            app.http.server.configuration.address = .hostname("127.0.0.1", port: port)
+            app.http.server.configuration.port = port
+
+            app.get("localhostdirect.mobileconfig") { _ -> Response in
+                var headers = HTTPHeaders()
+                headers.add(name: .contentType, value: "application/x-apple-aspen-config")
+                return Response(status: .ok, headers: headers, body: .init(data: profileData))
+            }
+
+            do {
+                try app.server.start()
+                DispatchQueue.main.async {
+                    let url = URL(string: "http://127.0.0.1:\(port)/localhostdirect.mobileconfig")!
+                    let safariView = SafariWebView(url: url)
+                    UIApplication.shared.windows.first?.rootViewController?.present(UIHostingController(rootView: safariView), animated: true, completion: nil)
+                    completion(true)
+                }
+            } catch {
+                print("Failed to start trust profile server: \(error)")
+                DispatchQueue.main.async { completion(false) }
+            }
+        }
     }
 }

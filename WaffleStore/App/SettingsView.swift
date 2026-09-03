@@ -8,9 +8,22 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     
     @AppStorage("autoCleanApp") var autoCleanApp: Bool = true
+    @AppStorage("installMethod") private var installMethodRaw: Int = InstallMethod.semiLocalHTTP.rawValue
     @StateObject private var localizationManager = LocalizationManager.shared
     @State private var showFileImporter = false
     @State private var isUpdatingCertificates = false
+    @State private var isInstallingTrustProfile = false
+
+    @State private var showExportLoginPrompt = false
+    @State private var exportLoginPassphrase = ""
+    @State private var showImportLoginFileImporter = false
+    @State private var showImportLoginPrompt = false
+    @State private var importLoginPassphrase = ""
+    @State private var pendingImportLoginData: Data?
+
+    private var installMethod: InstallMethod {
+        InstallMethod(rawValue: installMethodRaw) ?? .semiLocalHTTP
+    }
     
     private var appVersionString: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -48,29 +61,152 @@ struct SettingsView: View {
 
                 Section(
                     header: HeaderLabel(text: "Server & SSL".localized, icon: "server.rack"),
-                    footer: Text("Server SSL Description".localized)
+                    footer: Text(installMethod.subtitle)
                 ) {
-                    Button(action: {
-                        isUpdatingCertificates = true
-                        SSLCertificateManager.update { success in
-                            isUpdatingCertificates = false
-                            if success {
+                    Picker(selection: $installMethodRaw) {
+                        ForEach(InstallMethod.allCases) { method in
+                            Text(method.displayName).tag(method.rawValue)
+                        }
+                    } label: {
+                        Text("Install Method".localized)
+                    }
+                    .pickerStyle(.menu)
+
+                    if installMethod == .localhostDirectSelfSigned {
+                        Button(action: {
+                            isUpdatingCertificates = true
+                            LocalhostDirectManager.update(for: .selfSigned) { success in
+                                isUpdatingCertificates = false
                                 showAlert(
-                                    title: "SSL Certificates".localized,
-                                    message: "Certificates updated successfully.".localized
-                                )
-                            } else {
-                                showAlert(
-                                    title: "SSL Certificates".localized,
-                                    message: "Failed to download, check your internet connection and try again.".localized
+                                    title: "localhost.direct".localized,
+                                    message: success
+                                        ? "Certificate downloaded. Now tap \"Install Trust Profile\" below and follow the steps.".localized
+                                        : "Failed to download, check your internet connection and try again.".localized
                                 )
                             }
+                        }) {
+                            ButtonLabel(text: "Download Certificate".localized, icon: "arrow.down.doc")
                         }
+                        .buttonStyle(TranslucentButtonStyle())
+                        .disabled(isUpdatingCertificates)
+
+                        Button(action: {
+                            isInstallingTrustProfile = true
+                            presentLocalhostDirectTrustProfile { success in
+                                isInstallingTrustProfile = false
+                                if !success {
+                                    showAlert(
+                                        title: "localhost.direct".localized,
+                                        message: "Couldn't prepare the trust profile. Try downloading the certificate above first.".localized
+                                    )
+                                }
+                            }
+                        }) {
+                            ButtonLabel(text: "Install Trust Profile".localized, icon: "checkmark.seal")
+                        }
+                        .buttonStyle(TranslucentButtonStyle())
+                        .disabled(isInstallingTrustProfile)
+
+                        Text("One-time step: after installing the profile, go to Settings > General > About > Certificate Trust Settings and enable full trust for \"localhost.direct\".".localized)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if installMethod == .localhostDirectPublicCA {
+                        Button(action: {
+                            isUpdatingCertificates = true
+                            LocalhostDirectManager.update(for: .publicCA) { success in
+                                isUpdatingCertificates = false
+                                showAlert(
+                                    title: "localhost.direct".localized,
+                                    message: success
+                                        ? "Certificate downloaded.".localized
+                                        : "Failed to download, check your internet connection and try again.".localized
+                                )
+                            }
+                        }) {
+                            ButtonLabel(text: "Download Certificate".localized, icon: "arrow.down.doc")
+                        }
+                        .buttonStyle(TranslucentButtonStyle())
+                        .disabled(isUpdatingCertificates)
+                    }
+                }
+
+                Section(
+                    header: HeaderLabel(text: "Login Transfer".localized, icon: "person.badge.key"),
+                    footer: Text("Logging into another fork with the same Apple ID will still sign you out here - that's on Apple's end, not something this can fix. This only saves you from retyping your password and 2FA code. The exported file is only as safe as the passphrase you set - treat both like your actual Apple ID password.".localized)
+                ) {
+                    Button(action: {
+                        exportLoginPassphrase = ""
+                        showExportLoginPrompt = true
                     }) {
-                        ButtonLabel(text: "Update SSL Certificates".localized, icon: "arrow.down.doc")
+                        ButtonLabel(text: "Export Login".localized, icon: "square.and.arrow.up")
                     }
                     .buttonStyle(TranslucentButtonStyle())
-                    .disabled(isUpdatingCertificates)
+                    .disabled(!EncryptedKeychainWrapper.hasAuthInfo())
+
+                    Button(action: {
+                        showImportLoginFileImporter = true
+                    }) {
+                        ButtonLabel(text: "Import Login".localized, icon: "square.and.arrow.down")
+                    }
+                    .buttonStyle(TranslucentButtonStyle())
+                }
+                .alert("Set an Export Passphrase".localized, isPresented: $showExportLoginPrompt) {
+                    SecureField("Passphrase".localized, text: $exportLoginPassphrase)
+                    Button("Export".localized) {
+                        if let url = AuthTransferManager.exportToFile(passphrase: exportLoginPassphrase) {
+                            presentShareSheet(with: url)
+                        } else {
+                            showAlert(
+                                title: "Login Transfer".localized,
+                                message: "Couldn't export. Make sure you're logged in and entered a passphrase.".localized
+                            )
+                        }
+                        exportLoginPassphrase = ""
+                    }
+                    Button("Cancel".localized, role: .cancel) {
+                        exportLoginPassphrase = ""
+                    }
+                } message: {
+                    Text("This file will contain your Apple ID password. Choose a real, strong passphrase - anyone with both the file and this passphrase can decrypt it.".localized)
+                }
+                .fileImporter(isPresented: $showImportLoginFileImporter, allowedContentTypes: [.json]) { result in
+                    switch result {
+                    case .success(let url):
+                        if url.startAccessingSecurityScopedResource() {
+                            defer { url.stopAccessingSecurityScopedResource() }
+                            pendingImportLoginData = try? Data(contentsOf: url)
+                        }
+                        if pendingImportLoginData != nil {
+                            importLoginPassphrase = ""
+                            showImportLoginPrompt = true
+                        } else {
+                            showAlert(title: "Login Transfer".localized, message: "Couldn't read that file.".localized)
+                        }
+                    case .failure(let error):
+                        print("Failed to import login: \(error)")
+                    }
+                }
+                .alert("Enter the Export Passphrase".localized, isPresented: $showImportLoginPrompt) {
+                    SecureField("Passphrase".localized, text: $importLoginPassphrase)
+                    Button("Import".localized) {
+                        if let data = pendingImportLoginData,
+                           AuthTransferManager.importFromData(data, passphrase: importLoginPassphrase) {
+                            showAlert(title: "Login Transfer".localized, message: "Login imported successfully.".localized)
+                        } else {
+                            showAlert(
+                                title: "Login Transfer".localized,
+                                message: "Couldn't import - wrong passphrase, or the file wasn't a valid export.".localized
+                            )
+                        }
+                        importLoginPassphrase = ""
+                        pendingImportLoginData = nil
+                    }
+                    Button("Cancel".localized, role: .cancel) {
+                        importLoginPassphrase = ""
+                        pendingImportLoginData = nil
+                    }
                 }
                 
                 Section(header: HeaderLabel(text: "Language".localized, icon: "globe"), footer:

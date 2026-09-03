@@ -22,7 +22,7 @@
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>CFBundleURLName</key>
-            <string>com.con.violetstore</string>
+            <string>xyz.c0n.violetstore</string>
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>violetstore</string>

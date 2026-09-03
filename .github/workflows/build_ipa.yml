@@ -5,6 +5,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -21,7 +24,7 @@ jobs:
       - name: Link Plist and Update Build Settings
         run: |
           # Ensure project.pbxproj uses WaffleStore-Info.plist and set bundle ID + version
-          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = .*/PRODUCT_BUNDLE_IDENTIFIER = "com.con.violetstore";/g' WaffleStore.xcodeproj/project.pbxproj
+          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = .*/PRODUCT_BUNDLE_IDENTIFIER = "xyz.c0n.violetstore";/g' WaffleStore.xcodeproj/project.pbxproj
           sed -i '' 's/MARKETING_VERSION = .*/MARKETING_VERSION = 0.1.0;/g' WaffleStore.xcodeproj/project.pbxproj
           sed -i '' 's|INFOPLIST_FILE = .*;|INFOPLIST_FILE = WaffleStore-Info.plist;|g' WaffleStore.xcodeproj/project.pbxproj
 
@@ -37,7 +40,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             VALIDATE_PRODUCT=NO \
-            PRODUCT_BUNDLE_IDENTIFIER="com.con.violetstore" \
+            PRODUCT_BUNDLE_IDENTIFIER="xyz.c0n.violetstore" \
             MARKETING_VERSION="0.1.0"
 
       - name: Package into IPA
@@ -54,3 +57,36 @@ jobs:
         with:
           name: VioletStore-v0.1.0
           path: VioletStore.ipa
+
+      # actions/upload-artifact above always wraps its download in a zip -
+      # that's GitHub's own artifact-download mechanism, not something this
+      # workflow controls, and there's no way to turn it off. It's kept
+      # anyway since it's handy for grabbing a build from a specific run
+      # without touching Releases. The two steps below are the actual fix
+      # for wanting a plain .ipa: GitHub Release *assets* download as the
+      # raw file with no zip wrapper. "development" is a fixed, reused tag,
+      # so this updates the same release/asset in place on every push
+      # instead of piling up a new release per commit.
+
+      # softprops/action-gh-release updates the release's assets/description
+      # in place for a reused tag, but doesn't move the tag ref itself - so
+      # without this, "development" would keep pointing at whatever commit
+      # first created it. Force-moving it here keeps the tag meaningful too.
+      - name: Move the "development" tag to this commit
+        run: |
+          git tag -f development
+          git push origin -f development
+
+      - name: Publish IPA to Development Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: development
+          name: "🚧 Development Build"
+          prerelease: true
+          body: |
+            Automated development build from the latest commit on `${{ github.ref_name }}`.
+
+            This is not a stable release - it's rebuilt and replaced on every push, straight from whatever's currently on that branch, with no manual testing in between. Expect bugs.
+
+            Commit: ${{ github.sha }}
+          files: VioletStore.ipa

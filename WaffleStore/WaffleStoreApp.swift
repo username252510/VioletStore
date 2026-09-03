@@ -41,8 +41,16 @@ struct WaffleStoreApp: App {
                     // Best-effort, silent - if this fails we just fall back
                     // to plain HTTP/127.0.0.1 later like before. Warming this
                     // here means the first downgrade of a session usually
-                    // doesn't have to wait on it at all.
-                    SSLCertificateManager.updateIfNeeded { _ in }
+                    // doesn't have to wait on it. Only warms whichever store
+                    // the currently-selected install method actually needs.
+                    switch InstallMethod.current {
+                    case .localhostDirectSelfSigned:
+                        LocalhostDirectManager.updateIfNeeded(for: .selfSigned) { _ in }
+                    case .localhostDirectPublicCA:
+                        LocalhostDirectManager.updateIfNeeded(for: .publicCA) { _ in }
+                    case .semiLocalHTTP:
+                        break
+                    }
                 }
                 .onOpenURL { schemedURL in
                     let rawURL = schemedURL.absoluteString.replacingOccurrences(of: "wafflestore:", with: "")
